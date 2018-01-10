@@ -18,7 +18,8 @@ Created on Aug 19, 2016
 author: jakeret
 '''
 from __future__ import print_function, division, absolute_import, unicode_literals
-
+from basic_layers import *
+from dirac_layers import *
 import tensorflow as tf
 
 def weight_variable(shape, stddev=0.1):
@@ -69,3 +70,114 @@ def pixel_wise_softmax_2(output_map):
 def cross_entropy(y_,output_map):
     return -tf.reduce_mean(y_*tf.log(tf.clip_by_value(output_map,1e-10,1.0)), name="cross_entropy")
 #     return tf.reduce_mean(-tf.reduce_sum(y_ * tf.log(output_map), reduction_indices=[1]))
+
+def simple_block(inputconv, output_dim=64, filter_height=5, filter_width=5, stride_height=1, stride_width=1, stddev=0.02, padding="SAME", maxpool=False, upsample=False, do_norm=True, norm_type='batch_norm', name="dirac_conv2d"):
+    # batchnorm -> relu -> (maxpool) -> diracconv(+batchnorm)-> dropout
+    shortskip =inputconv
+    conv = tf.contrib.layer.batch_norm(inputconv, decay=0.9, updates_collections=None, epsilon=1e-5, scope="batch_norm")
+    conv = tf.nn.relu(conv, "relu")
+    if (maxpool == True):
+        conv = tf.nn.max_pool(conv, [1, 2, 2, 1], [1, 2, 2, 1], padding='SAME')
+        conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name)
+        conv = ncrelu(conv)
+        conv = tf.nn.dropout(conv, self.dropout)
+        shortskip = tf.nn.avg_pool(shortskip, [1, 2, 2, 1], [1, 2, 2, 1], padding='SAME')
+        conv = conv + shortskip
+        return conv
+    elif (upsample == True):
+        conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name)
+        conv = ncrelu(conv)
+        conv = tf.nn.dropout(conv, self.dropout)
+        '''
+        shortskip =
+        '''
+        conv = conv + shortskip
+        return conv
+    else:
+        conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name)
+        conv = ncrelu(conv)
+        conv = tf.nn.dropout(conv, self.dropout)
+        conv = conv + shortskip
+        return conv
+
+def bottleneck(inputconv, output_dim=64, filter_height=5, filter_width=5, stride_height=1, stride_width=1, stddev=0.02, padding="SAME", maxpool=False, upsample=False, do_norm=True, norm_type='batch_norm'):
+    # batchnorm -> relu -> (maxpool) -> diracconv(+batchnorm)-> dropout
+    shortskip =inputconv
+    conv = tf.contrib.layer.batch_norm(inputconv, decay=0.9, updates_collections=None, epsilon=1e-5, scope="batch_norm")
+    conv = tf.nn.relu(conv, "relu")
+
+    if (maxpool == True):
+        conv = tf.nn.max_pool(conv, [1, 2, 2, 1], [1, 2, 2, 1], padding='SAME')
+        conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name="dirac_conv2d")
+        conv = ncrelu(conv)
+        conv = tf.nn.dropout(conv, dropout)
+        shortskip = tf.nn.avg_pool(shortskip, [1, 2, 2, 1], [1, 2, 2, 1], padding='SAME')
+        conv = conv + shortskip
+        return conv
+    elif (upsample == True):
+        conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name="dirac_conv2d")
+        conv = ncrelu(conv)
+        conv = tf.nn.dropout(conv, dropout)
+        '''
+        shortskip =
+        '''
+        conv = conv + shortskip
+        return conv
+    else:
+        conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name="dirac_conv2d")
+        conv = ncrelu(conv)
+        conv = tf.nn.dropout(conv, dropout)
+        conv = conv + shortskip
+        return conv
+
+def residual_block(inputconv, num_iter=3, output_dim=64, filter_height=5, filter_width=5, stride_height=1, stride_width=1, stddev=0.02, padding="SAME", do_norm=True, norm_type='batch_norm', dropout=0.5, name="residualblock"):
+
+    for i in range(num_iter):
+        if i == 0:
+            conv = dirac_conv2d(inputconv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding,do_norm, norm_type, name=name + "_" + str(i) +"_1")
+        else:
+            conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding,do_norm, norm_type, name=name + "_" + str(i) +"_2")
+        conv = tf.contrib.layers.conv2d(inputconv, output_dim/2, [1,1], [1,1], padding, activation_fn=None, weights_initializer=tf.truncated_normal_initializer(stddev=stddev),biases_initializer=tf.constant_initializer(0.0))
+        conv = ncrelu(conv)
+        conv = tf.nn.dropout(conv, dropout)
+        print(tf.shape(conv))
+
+    return conv
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

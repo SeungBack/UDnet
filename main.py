@@ -9,11 +9,18 @@ import sys
 import pickle
 import wget
 import tarfile
+import logging
+import numpy as np
+import tifffile as tiff
+import sys
+import cv2 as cv
+sys.path.append('/home/seung/UDnet/isbi-2012/')
 
 from basic_layers import *
 from dirac_layers import *
 from layers import *
 from isbi_utils import *
+from math import *
 
 '''
 hyperparameters
@@ -26,13 +33,19 @@ Try zero_debias_moving_mean=True for improved stability.
 
 '''
 
+'''
+augmentation
+
+model change
+'''
+
 class UDnet():
 
     def run_parser(self):
         self.parser = optparse.OptionParser()
 
         self.parser.add_option('--num_iter', type='int', default=1000, dest='num_iter')
-        self.parser.add_option('--batch_size', type='int', default=100, dest='batch_size')
+        self.parser.add_option('--batch_size', type='int', default=3, dest='batch_size')
         self.parser.add_option('--img_width', type='int', default=512, dest='img_width')
         self.parser.add_option('--img_height', type='int', default=512, dest='img_height')
         self.parser.add_option('--img_depth', type='int', default=1, dest='img_depth')
@@ -50,6 +63,8 @@ class UDnet():
         self.parser.add_option('--dataset', type='string', default="isbi", dest='dataset')
         self.parser.add_option('--dataset_folder', type='string', default="../../../datasets", dest='dataset_folder')
         self.parser.add_option('--dropout', type='float', default=0.5, dest='dropout')
+        self.parser.add_option('--lr', type='float', default=0.1, dest='lr')
+        self.parser.add_option('--rf', type='float', default=0.00005, dest='rf')
 
     def __init__(self):
         self.run_parser()
@@ -82,6 +97,8 @@ class UDnet():
         self.tensorboard_dir = "./output/" + self.model + "/" + self.dataset + "/tensorboard"
         self.check_dir = "./output/" + self.model + "/" + self.dataset + "/checkpoints"
         self.images_dir = "./output/" + self.model + "/" + self.dataset + "/imgs"
+        self.lr = opt.lr
+        self.rf = opt.rf
 
     def load_isbi_dataset(self, mode='train'):
 
@@ -89,10 +106,22 @@ class UDnet():
 
             if (mode == 'train'):
 
-                self.train_images, self.train_labels = isbi_get_data_montage('/home/seung/UDnet/ISBI/train-volume.tif', '/home/seung/UDnet/ISBI/train-labels.tif', nb_rows=6, nb_cols=5, rng=np.random)
+                imgs_path = '/home/seung/UDnet/ISBI/train-volume.tif'
+                msks_path = '/home/seung/UDnet/ISBI/train-labels.tif'
+
+                imgs, msks = tiff.imread(imgs_path) / 255, tiff.imread(msks_path) / 255
+
+                self.train_images, self.train_labels = unison_shuffled_copies(imgs, msks)
+                self.train_images = np.reshape(self.train_images,
+                                          [self.num_images, self.img_height, self.img_width, self.img_depth])
+                self.train_labels = np.reshape(self.train_labels,
+                                          [self.num_images, self.img_height, self.img_width, self.img_depth])
+                self.sample_imgs = self.train_images[0:self.batch_size]
 
             elif (mode == 'test'):
 
+                test_imgs_path='/home/seung/UDnet/ISBI/test-volume.tif'
+                self.test_images = tiff.imread(test_imgs_path) /255
                 self.test_images = np.reshape(self.test_images,[self.num_images, self.img_height, self.img_width, self.img_depth])
         else:
             print("Model not supported for this dataset")
@@ -103,9 +132,9 @@ class UDnet():
         with tf.variable_scope("Model") as scope:
 
             self.input_imgs = tf.placeholder(tf.float32,
-                                             [self.batch_size, self.img_height, self.img_width, self.img_depth])
-            self.input_labels = tf.placeholder(tf.int32, [self.batch_size])
-
+                                             shape = [self.batch_size, self.img_height, self.img_width, self.img_depth])
+            self.input_labels = tf.placeholder(tf.int32,
+                                             shape = [self.batch_size, self.img_height, self.img_width, self.img_depth])
             if (self.dataset == 'cifar-10'):
                 self.cifar_model_setup()
             elif (self.dataset == 'Imagenet'):
@@ -121,124 +150,140 @@ class UDnet():
 
         self.do_setup = False
 
-    def simple_block(inputconv, output_dim=64, filter_height=5, filter_width=5, stride_height=1, stride_width=1, stddev=0.02, padding="SAME", maxpool=False, upsample=False, do_norm=True, norm_type='batch_norm', name="dirac_conv2d"):
-        # batchnorm -> relu -> (maxpool) -> diracconv(+batchnorm)-> dropout
-        shortskip =inputconv
-        conv = tf.contrib.layer.batch_norm(inputconv, decay=0.9, updates_collections=None, epsilon=1e-5, scope="batch_norm")
-        conv = tf.nn.relu(conv, "relu")
-        if (maxpool == True):
-            conv = tf.nn.max_pool(conv, [1, 2, 2, 1], [1, 2, 2, 1], padding='SAME')
-            conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name)
-            conv = ncrelu(conv)
-            conv = tf.nn.dropout(conv, self.dropout)
-            shortskip = tf.nn.avg_pool(shortskip, [1, 2, 2, 1], [1, 2, 2, 1], padding='SAME')
-            conv = conv + shortskip
-            return conv
-        elif (upsample == True)
-            conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name)
-            conv = ncrelu(conv)
-            conv = tf.nn.dropout(conv, self.dropout)
-            '''
-            shortskip =
-            '''
-            conv = conv + shortskip
-            return conv
-        else:
-            conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name)
-            conv = ncrelu(conv)
-            conv = tf.nn.dropout(conv, self.dropout)
-            conv = conv + shortskip
-            return conv
 
-    def bottleneck(inputconv, output_dim=64, filter_height=5, filter_width=5, stride_height=1, stride_width=1, stddev=0.02, padding="SAME", maxpool=False, upsample=False, do_norm=True, norm_type='batch_norm'):
-        # batchnorm -> relu -> (maxpool) -> diracconv(+batchnorm)-> dropout
-        shortskip =inputconv
-        conv = tf.contrib.layer.batch_norm(inputconv, decay=0.9, updates_collections=None, epsilon=1e-5, scope="batch_norm")
-        conv = tf.nn.relu(conv, "relu")
-
-        if (maxpool == True):
-            conv = tf.nn.max_pool(conv, [1, 2, 2, 1], [1, 2, 2, 1], padding='SAME')
-            conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name="dirac_conv2d")
-            conv = ncrelu(conv)
-            conv = tf.nn.dropout(conv, self.dropout)
-            shortskip = tf.nn.avg_pool(shortskip, [1, 2, 2, 1], [1, 2, 2, 1], padding='SAME')
-            conv = conv + shortskip
-            return conv
-        elif (upsample == True)
-            conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name="dirac_conv2d")
-            conv = ncrelu(conv)
-            conv = tf.nn.dropout(conv, self.dropout)
-            '''
-            shortskip =
-            '''
-            conv = conv + shortskip
-            return conv
-        else:
-            conv = dirac_conv2d(conv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, do_norm, norm_type, name="dirac_conv2d")
-            conv = ncrelu(conv)
-            conv = tf.nn.dropout(conv, self.dropout)
-            conv = conv + shortskip
-            return conv
 
 
     def isbi_model_setup(self):
 
         self.input_imgs = tf.placeholder(tf.float32,[self.batch_size, self.img_height, self.img_width, self.img_depth]) # 512x512x1
-        self.input_labels = tf.placeholder(tf.int32, [self.batch_size])
+        self.input_labels = tf.placeholder(tf.int32,
+                                           shape=[self.batch_size, self.img_height, self.img_width, self.img_depth])
 
-        input_pad = tf.pad(self.input_imgs, [[0, 0], [1, 1], [1, 1], [0, 0]])
-        o_ctop = general_conv2d(input_pad, 32, 3, 3, 1, 1, do_norm=False, name="conv_top") # 512x512x32
-        # (inputconv, output_dim, filter_height, filter_width, stride_height, stride_width, stddev, padding, name, do_norm=True, norm_type='batch_norm', do_relu=False, relufactor=0)
-        #inputconv, output_dim=64, filter_height=5, filter_width=5, stride_height=1, stride_width=1, stddev=0.02, padding="SAME", maxpool=False, upsample=False, do_norm=True, norm_type='batch_norm'):
+        long_skip = []
 
-        o_simple1 = self.simple_block(o_ctop, 32, 3, 3, 1, 1, maxpool=True, name="simple_down") #256x256x32
-        o_bottleneck1 = self.bottleneck() #128x128x128
-
+        ################ encoding path ##############
         for group in range(0, self.num_groups):
-            for block in range(0, self.num_blocks):
-                o_loop = ncrelu(o_loop, name="crelu_" + str(group) + "_" + str(block))
-                o_loop = dirac_conv2d(o_loop, outdim, 3, 3, 1, 1, name="conv_" + str(group) + "_" + str(block))
 
-            if (group != self.num_groups - 1):
-                o_loop = tf.nn.pool(o_loop, [2, 2], "MAX", "VALID", None, [2, 2], name="maxpool_" + str(group))
+            if group == 0:
+                dim = 64
+                conv = self.input_imgs
+            else:
+                dim = dim*2
+            short_skip = dirac_conv2d(conv, output_dim=dim, filter_height=3, filter_width=3, stride_height=1,
+                                stride_width=1,stddev=0.02, padding="SAME", do_norm=True, norm_type='batch_norm',
+                                name="encode_diracconv_" + str(group) +"_1")
+            print(short_skip)
+            conv = residual_block(inputconv = short_skip , num_iter=3,  output_dim=dim, filter_height=3, filter_width=3,
+                                  stride_height=1, stride_width=1, stddev=0.02, padding="SAME", do_norm=True,
+                                  norm_type='batch_norm', dropout=self.dropout, name = "encode_res_block_" + str(group))
+            conv = conv + short_skip
+            print(conv)
+            conv = dirac_conv2d(conv, output_dim=dim, filter_height=3, filter_width=3, stride_height=1,
+                                stride_width=1,stddev=0.02, padding="SAME", do_norm=True, norm_type='batch_norm',
+                                name="encode_diracconv_" + str(group) + "_2")
+            print(conv)
+            long_skip.append(conv)
+            conv = tf.nn.max_pool(conv, [1, 2, 2, 1], [1, 2, 2, 1], 'SAME', name="encode_max_" + str(group))
+            print("max : ", conv)
+        ################ bottle neck ################
+        dim = dim*2
+        conv = dirac_conv2d(conv, output_dim=dim, filter_height=3, filter_width=3, stride_height=1,
+                            stride_width=1, stddev=0.02, padding="SAME", do_norm=True, norm_type='batch_norm',
+                            name="dirac_conv2d_bottleneck_1")
+        print(conv)
+        conv = conv + residual_block(inputconv=conv, num_iter=3, output_dim=dim, filter_height=3, filter_width=3,
+                              stride_height=1, stride_width=1, stddev=0.02, padding="SAME", do_norm=True,
+                              norm_type='batch_norm', dropout=self.dropout, name="bottleneck_res_block_" + str(group))
+        print(conv)
+        conv = dirac_conv2d(conv, output_dim=dim, filter_height=3, filter_width=3, stride_height=1,
+                            stride_width=1, stddev=0.02, padding="SAME", do_norm=True, norm_type='batch_norm',
+                            name="dirac_conv2d_bottleneck_2")
+        print(conv)
 
-            outdim = outdim * 2
 
-        temp_shape = o_loop.get_shape().as_list()
-        o_avgpool = tf.nn.avg_pool(o_loop, [1, temp_shape[1], temp_shape[2], 1], [1, temp_shape[1], temp_shape[2], 1],
-                                   "VALID", name="avgpool")
-        temp_depth = o_avgpool.get_shape().as_list()[-1]
-        self.final_output = linear1d(tf.reshape(o_avgpool, [self.batch_size, temp_depth]), temp_depth, 10)
+        ################ decoding path ################
+        for group in range(0, self.num_groups):
+
+            dim = int(dim/2)
+            conv = tf.contrib.layers.conv2d_transpose(inputs = conv, num_outputs = dim, kernel_size = 2, stride = 2)
+            print(conv)
+            conv = conv + long_skip[self.num_groups - group -1]
+
+            conv = dirac_conv2d(conv, output_dim=dim, filter_height=3, filter_width=3,
+                                stride_height=1, stride_width=1, stddev=0.02, padding="SAME", do_norm=True,
+                                norm_type='batch_norm', name="decode_diracconv_" + str(group) +"_1")
+
+            conv = conv + residual_block(inputconv=conv, num_iter=3, output_dim=dim, filter_height=3,
+                                  filter_width=3, stride_height=1, stride_width=1, stddev=0.02, padding="SAME",
+                                  do_norm=True, norm_type='batch_norm', dropout=self.dropout, name = "decode_res_block_" + str(group))
+
+            conv = dirac_conv2d(conv, output_dim=dim, filter_height=3, filter_width=3, stride_height=1,
+                                stride_width=1, stddev=0.02, padding="SAME", do_norm=True, norm_type='batch_norm',
+                                name="decode_diracconv_" + str(group) + "_2")
+
+
+        ################ final output ###############
+        conv = tf.contrib.layers.conv2d(conv, 1, [1,1], [1,1], padding='SAME', activation_fn=None,
+                                        weights_initializer=tf.truncated_normal_initializer(stddev=0.02),biases_initializer=tf.constant_initializer(0.0))
+
+        conv = tf.nn.relu(conv, "final_relu")
+        self.final_output = tf.sigmoid(conv, name="final_sigmoid")
+
+        #temp_shape = conv.get_shape().as_list()
+        #o_avgpool = tf.nn.avg_pool(conv, [1, temp_shape[1], temp_shape[2], 1], [1, temp_shape[1], temp_shape[2], 1],
+        #                           "VALID", name="avgpool")
+        #temp_depth = o_avgpool.get_shape().as_list()[-1]
+        #self.final_output = linear1d(tf.reshape(o_avgpool, [self.batch_size, temp_depth]), temp_depth, 10)
+
+
+        # o_simple1 = self.simple_block(o_ctop, 32, 3, 3, 1, 1, maxpool=True, name="simple_down") #256x256x32
+        # o_bottleneck1 = self.bottleneck() #128x128x128
+        #
+        # for group in range(0, self.num_groups):
+        #     for block in range(0, self.num_blocks):
+        #         o_loop = ncrelu(o_loop, name="crelu_" + str(group) + "_" + str(block))
+        #         o_loop = dirac_conv2d(o_loop, outdim, 3, 3, 1, 1, name="conv_" + str(group) + "_" + str(block))
+        #
+        #     if (group != self.num_groups - 1):
+        #         o_loop = tf.nn.pool(o_loop, [2, 2], "MAX", "VALID", None, [2, 2], name="maxpool_" + str(group))
+        #
+        #     outdim = outdim * 2
+        #
+        # temp_shape = o_loop.get_shape().as_list()
+        # o_avgpool = tf.nn.avg_pool(o_loop, [1, temp_shape[1], temp_shape[2], 1], [1, temp_shape[1], temp_shape[2], 1],
+        #                            "VALID", name="avgpool")
+        # temp_depth = o_avgpool.get_shape().as_list()[-1]
+        # self.final_output = linear1d(tf.reshape(o_avgpool, [self.batch_size, temp_depth]), temp_depth, 10)
 
     def loss_setup(self):
 
-        eps = 1e-5
-        prediction = pixel_wise_softmax_2(logits)
-        intersection = tf.reduce_sum(prediction * self.y)
-        union = eps + tf.reduce_sum(prediction) + tf.reduce_sum(self.y)
-
-        self.loss = -(2 * intersection / (union))
+        #self.loss = tf.nn.softmax_cross_entropy_with_logits(labels=self.input_labels, logits=self.final_output, name="Error_loss")
+        self.loss = tf.losses.mean_squared_error(labels=self.input_labels, predictions=self.final_output)
+        self.loss = self.loss + tf.add_n([tf.nn.l2_loss(v) for v in self.model_vars]) * self.rf # for regularization
         self.loss = tf.reduce_mean(self.loss)
-        optimizer = tf.train.RMSPropOptimizer(0.001, beta1=0.5)
+
+
+        #optimizer = tf.train.GradientDescentOptimizer(learning_rate=self.lr)
+        optimizer = tf.train.MomentumOptimizer(self.lr, 0.9)
+        #optimizer = tf.train.AdamOptimizer(0.001, beta1=0.5)
         self.loss_optimizer = optimizer.minimize(self.loss)
 
         # Defining the summary ops
         self.cl_loss_summ = tf.summary.scalar("cl_loss", self.loss)
 
-    # print(self.loss.shape)
 
     def train(self):
 
         self.model_setup()
         self.loss_setup()
 
-        if self.dataset == 'isbi' :
-            self.load_isbi_dataset('train')
-            self.normalize_input(self.input_imgs)
+        #if self.dataset == 'isbi' :
+        self.load_isbi_dataset('train')
+        #self.normalize_input(self.input_imgs)
 
-        else:
-            print('No such dataset exist')
-            sys.exit()
+     #   else:
+     #       print('No such dataset exist')
+     #       sys.exit()
 
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()
@@ -250,6 +295,7 @@ class UDnet():
 
         with tf.Session() as sess:
 
+            print("-----------------start learning--------------")
             sess.run(init)
             writer = tf.summary.FileWriter(self.tensorboard_dir)
             writer.add_graph(sess.graph)
@@ -257,9 +303,13 @@ class UDnet():
             if self.load_checkpoint:
                 chkpt_fname = tf.train.latest_checkpoint(self.check_dir)
                 saver.restore(sess, chkpt_fname)
+                print("loaded checkpoint sucessfully")
 
             for epoch in range(0, self.max_epoch):
 
+                self.train_images, self.train_labels = unison_shuffled_copies(self.train_images, self.train_labels)
+                if epoch % 20 == 0:
+                    self.lr = 0.95*self.lr
                 for itr in range(0, int(self.num_images / self.batch_size)):
                     imgs = self.train_images[itr * self.batch_size:(itr + 1) * (self.batch_size)]
                     labels = self.train_labels[itr * self.batch_size:(itr + 1) * (self.batch_size)]
@@ -275,6 +325,21 @@ class UDnet():
 
                 saver.save(sess, os.path.join(self.check_dir, "dirac"), global_step=epoch)
 
+                output = sess.run([self.final_output], feed_dict={self.input_imgs: self.sample_imgs})
+                result = output[0][0]
+                result = np.reshape(result, [self.img_width, self.img_height])
+                result = np.round(result)
+                result = result * 255.0
+                cv.imwrite(self.images_dir+'/result_epoch_'+str(epoch+1)+'.png', result)
+
+
+
+        print("learning finish")
+
+    def normalize_input(self, imgs):
+
+        return imgs / 127.5 - 1.0
+
     def test(self):
 
         if (self.do_setup):
@@ -282,7 +347,9 @@ class UDnet():
 
         if self.dataset == 'cifar-10':
             self.load_cifar_dataset('test')
-            self.normalize_input(self.input_imgs)
+            #self.normalize_input(self.input_imgs)
+        if self.dataset == 'isbi':
+            self.load_isbi_dataset('test')
         else:
             print('No such dataset exist')
             sys.exit()
@@ -304,18 +371,34 @@ class UDnet():
                 saver.restore(sess, chkpt_fname)
 
             for itr in range(0, int(self.num_test_images / self.batch_size)):
-                imgs = self.train_images[itr * self.batch_size:(itr + 1) * (self.batch_size)]
-                labels = self.train_labels[itr * self.batch_size:(itr + 1) * (self.batch_size)]
+                imgs = self.test_images[itr * self.batch_size:(itr + 1) * (self.batch_size)]
+                test_output = sess.run([self.final_output], feed_dict={self.input_imgs: imgs})
 
-                test_output = sess.run([self.final_output],
-                                       feed_dict={self.input_imgs: imgs, self.input_labels: labels})
 
-                print(test_output)
-                print(labels)
 
+                if (itr == self.max_epoch - 1):
+                    result = sess.run([self.final_output], feed_dict={self.input_imgs: self.train_images})
+                    result = np.reshape(result, [self.num_images, self.img_width, self.img_height])
+                    tiff.imsave(self.images_dir + 'final_tr_result_.tif', result)
+
+                else:
+                    result = test_output[0][0]
+                    result = np.reshape(result, [self.img_width, self.img_height])
+                    result = result * 255.0
+                    cv.imwrite('./result.png', result)
+
+            result = sess.run([self.final_output], feed_dict={self.input_imgs: self.test_images})
+            result = np.reshape(result, [self.num_images, self.img_width, self.img_height])
+            result = np.round(result)
+            tiff.imsave(self.images_dir+'final_test_result_.tif', result)
+
+        print("test finish")
 
 
 if __name__ == "__main__" :
 
     model = UDnet()
-    model.test()
+    if (model.to_test):
+        model.test()
+    else:
+        model.train()
